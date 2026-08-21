@@ -27,7 +27,7 @@ except ImportError:
 # 6. PyQt5 GUI components LAST
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QLabel, 
-    QPushButton, QProgressBar, QHBoxLayout, QComboBox, QFileDialog
+    QPushButton, QProgressBar, QHBoxLayout, QComboBox, QFileDialog, QMessageBox
 )
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont
@@ -37,7 +37,6 @@ def get_location_string(box, img_width, img_height):
     cx = (x1 + x2) / 2
     cy = (y1 + y2) / 2
     
-    # 3x3 grid calculation
     col = "LEFT" if cx < img_width / 3 else "RIGHT" if cx > 2 * img_width / 3 else "CENTER"
     row = "TOP" if cy < img_height / 3 else "BOTTOM" if cy > 2 * img_height / 3 else "CENTER"
     
@@ -87,12 +86,10 @@ class DragDropWidget(QLabel):
 
     def dropEvent(self, event):
         file_path = None
-        # Handle standard file URLs
         if event.mimeData().hasUrls():
             urls = event.mimeData().urls()
             if urls:
                 file_path = urls[0].toLocalFile()
-        # Handle plain text paths sometimes sent by Windows Explorer
         elif event.mimeData().hasText():
             file_path = event.mimeData().text().strip().replace("file:///", "")
 
@@ -131,29 +128,25 @@ class DragDropWidget(QLabel):
 class WatermarkDetectorApp(QWidget):
     def __init__(self):
         super().__init__()
-        
-        # Ensures the main window doesn't block drop events for the child widget
         self.setAcceptDrops(True)
         
-        # Load watermark model (checks for local best.pt -> Hugging Face -> yolov8n.pt fallback)
-        if os.path.exists("best.pt"):
-            self.yolo_model = YOLO("best.pt")
-        else:
-            try:
-                self.yolo_model = YOLO("hf://qfisch/yolov8n-watermark-detection")
-            except Exception:
-                self.yolo_model = YOLO("yolov8n.pt")
+        # Model cache
+        self.current_yolo_model = None
+        self.custom_model_path = None
+        self.vgg_model = None
         
         try:
-            self.vgg_model = load_model(r"watermark_detection_model_V2_60000_Data_Set.h5")
+            if os.path.exists("watermark_detection_model_V2_60000_Data_Set.h5"):
+                self.vgg_model = load_model("watermark_detection_model_V2_60000_Data_Set.h5")
         except Exception:
             self.vgg_model = None
             
         self.initUI()
+        self.load_selected_model()
 
     def initUI(self):
         self.setWindowTitle('WATERMARK DETECTOR')
-        self.setGeometry(100, 100, 500, 520)
+        self.setGeometry(100, 100, 520, 550)
         
         layout = QVBoxLayout()
         
@@ -162,11 +155,15 @@ class WatermarkDetectorApp(QWidget):
         title.setFont(QFont("Arial", 20, QFont.Bold))
         layout.addWidget(title)
         
+        # Model selection dropdown
         model_layout = QHBoxLayout()
-        model_label = QLabel("Select Model:")
+        model_label = QLabel("Active Model:")
+        model_label.setFont(QFont("Arial", 10, QFont.Bold))
         model_layout.addWidget(model_label)
+        
         self.model_selector = QComboBox()
-        self.model_selector.addItems(["YOLOv8", "VGG16", "Both"])
+        self.populate_model_options()
+        self.model_selector.currentIndexChanged.connect(self.on_model_changed)
         model_layout.addWidget(self.model_selector)
         layout.addLayout(model_layout)
         
@@ -228,7 +225,64 @@ class WatermarkDetectorApp(QWidget):
         layout.addLayout(frames_layout)
         
         self.setLayout(layout)
+
+    def populate_model_options(self):
+        self.model_selector.clear()
         
+        # 1. Check for local best.pt
+        if os.path.exists("best.pt"):
+            self.model_selector.addItem("Watermark Model (best.pt)", "best.pt")
+            
+        # 2. Check for local yolov8n.pt
+        if os.path.exists("yolov8n.pt"):
+            self.model_selector.addItem("General YOLO (yolov8n.pt)", "yolov8n.pt")
+            
+        # 3. Hugging Face online model
+        self.model_selector.addItem("Hugging Face Watermark (qfisch)", "hf://qfisch/yolov8n-watermark-detection")
+        
+        # 4. Optional VGG16 if available
+        if self.vgg_model is not None:
+            self.model_selector.addItem("VGG16 Model (.h5)", "vgg16")
+
+        # 5. Allow user to browse their own model
+        self.model_selector.addItem("📂 Browse custom .pt model...", "browse")
+
+    def on_model_changed(self):
+        selected_data = self.model_selector.currentData()
+        
+        if selected_data == "browse":
+            file_path, _ = QFileDialog.getOpenFileName(
+                self,
+                "Select Custom YOLO Weights",
+                "",
+                "PyTorch Model (*.pt);;All Files (*.*)"
+            )
+            if file_path:
+                self.custom_model_path = file_path
+                custom_name = f"Custom: {os.path.basename(file_path)}"
+                # Insert custom option before browse option
+                self.model_selector.insertItem(self.model_selector.count() - 1, custom_name, file_path)
+                self.model_selector.setCurrentIndex(self.model_selector.count() - 2)
+            else:
+                self.model_selector.setCurrentIndex(0)
+                return
+                
+        self.load_selected_model()
+
+    def load_selected_model(self):
+        selected_data = self.model_selector.currentData()
+        if not selected_data or selected_data == "browse":
+            return
+            
+        if selected_data == "vgg16":
+            self.current_yolo_model = None
+            return
+            
+        try:
+            self.current_yolo_model = YOLO(selected_data)
+        except Exception as e:
+            QMessageBox.warning(self, "Model Error", f"Failed to load model {selected_data}:\n{str(e)}")
+
     def scan_file(self):
         if not self.drop_zone.file_path:
             self.result_label.setText("NO FILE LOADED")
@@ -238,8 +292,6 @@ class WatermarkDetectorApp(QWidget):
         QApplication.processEvents()
         
         file_path = self.drop_zone.file_path
-        model_choice = self.model_selector.currentText()
-        
         is_video = file_path.lower().endswith(('.mp4', '.avi', '.mov', '.mkv'))
         
         max_conf = 0.0
@@ -248,7 +300,7 @@ class WatermarkDetectorApp(QWidget):
         watermarked_frames = 0
         
         if not is_video:
-            conf, loc, detected = self.process_image(file_path, model_choice)
+            conf, loc, detected = self.process_image(file_path)
             max_conf = conf
             best_loc = loc
             watermarked_frames = 1 if detected else 0
@@ -265,7 +317,7 @@ class WatermarkDetectorApp(QWidget):
                     break
                     
                 if frame_count % 30 == 0:
-                    conf, loc, detected = self.process_frame(frame, model_choice)
+                    conf, loc, detected = self.process_frame(frame)
                     if detected:
                         watermarked_frames += 1
                         if conf > max_conf:
@@ -291,52 +343,46 @@ class WatermarkDetectorApp(QWidget):
         else:
             self.frames_value.setText("1 / 1")
             
-    def process_image(self, file_path, model_choice):
+    def process_image(self, file_path):
         frame = cv2.imread(file_path)
         if frame is None:
             return 0.0, "N/A", False
-        return self.process_frame(frame, model_choice)
+        return self.process_frame(frame)
         
-    def process_frame(self, frame, model_choice):
+    def process_frame(self, frame):
+        selected_data = self.model_selector.currentData()
+        
+        # VGG16 handling
+        if selected_data == "vgg16" and self.vgg_model is not None:
+            resized = cv2.resize(frame, (224, 224))
+            rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
+            img_array = image.img_to_array(rgb)
+            img_array = np.expand_dims(img_array, axis=0) / 255.0
+            pred = self.vgg_model.predict(img_array, verbose=0)
+            vgg_conf = float(pred[0][0])
+            return vgg_conf, "N/A", vgg_conf > 0.5
+            
+        # YOLO handling
+        if self.current_yolo_model is None:
+            return 0.0, "N/A", False
+            
         yolo_conf = 0.0
         yolo_loc = "N/A"
         yolo_detected = False
         
-        vgg_conf = 0.0
-        vgg_detected = False
+        results = self.current_yolo_model(frame, verbose=False)
+        img_height, img_width = frame.shape[:2]
         
-        if model_choice in ["YOLOv8", "Both"]:
-            results = self.yolo_model(frame, verbose=False)
-            img_height, img_width = frame.shape[:2]
-            
-            for r in results:
-                for box in r.boxes:
-                    conf = box.conf[0].item()
-                    if conf > yolo_conf:
-                        yolo_conf = conf
-                        b = box.xyxy[0].tolist()
-                        yolo_loc = get_location_string(b, img_width, img_height)
-                        yolo_detected = True
-                        
-        if model_choice in ["VGG16", "Both"] and self.vgg_model is not None:
-            resized = cv2.resize(frame, (224, 224))
-            rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
-            img_array = image.img_to_array(rgb)
-            img_array = np.expand_dims(img_array, axis=0)
-            img_array /= 255.0
-            
-            pred = self.vgg_model.predict(img_array, verbose=0)
-            vgg_conf = float(pred[0][0])
-            vgg_detected = vgg_conf > 0.5
-            
-        if model_choice == "YOLOv8":
-            return yolo_conf, yolo_loc, yolo_detected
-        elif model_choice == "VGG16":
-            return vgg_conf, "N/A", vgg_detected
-        else:
-            avg_conf = (yolo_conf + vgg_conf) / 2
-            detected = yolo_detected or vgg_detected
-            return avg_conf, yolo_loc, detected
+        for r in results:
+            for box in r.boxes:
+                conf = box.conf[0].item()
+                if conf > yolo_conf:
+                    yolo_conf = conf
+                    b = box.xyxy[0].tolist()
+                    yolo_loc = get_location_string(b, img_width, img_height)
+                    yolo_detected = True
+                    
+        return yolo_conf, yolo_loc, yolo_detected
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
