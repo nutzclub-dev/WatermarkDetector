@@ -1,20 +1,43 @@
-import sys
 import os
-from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QLabel, QPushButton, QProgressBar, QHBoxLayout, QComboBox
-from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QFont, QColor, QPalette
-import cv2
-import numpy as np
+import sys
+
+# 1. Prevent OpenMP collisions between PyTorch, OpenCV, and PyQt5
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+
+# 2. Register PyTorch DLL directory for Python 3.12+ on Windows
+torch_lib_path = os.path.join(sys.prefix, "Lib", "site-packages", "torch", "lib")
+if os.path.exists(torch_lib_path):
+    os.add_dll_directory(torch_lib_path)
+
+# 3. Import Torch & YOLO FIRST before any other C-extensions
+import torch
 from ultralytics import YOLO
-from tensorflow.keras.models import load_model
-from tensorflow.keras.preprocessing import image
+
+# 4. Math and Computer Vision
+import numpy as np
+import cv2
+
+# 5. TensorFlow / Keras (optional)
+try:
+    from tensorflow.keras.models import load_model
+    from tensorflow.keras.preprocessing import image
+except ImportError:
+    pass
+
+# 6. PyQt5 GUI components LAST
+from PyQt5.QtWidgets import (
+    QApplication, QWidget, QVBoxLayout, QLabel, 
+    QPushButton, QProgressBar, QHBoxLayout, QComboBox, QFileDialog
+)
+from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QFont
 
 def get_location_string(box, img_width, img_height):
     x1, y1, x2, y2 = box
     cx = (x1 + x2) / 2
     cy = (y1 + y2) / 2
     
-    # 3x3 grid
+    # 3x3 grid calculation
     col = "LEFT" if cx < img_width / 3 else "RIGHT" if cx > 2 * img_width / 3 else "CENTER"
     row = "TOP" if cy < img_height / 3 else "BOTTOM" if cy > 2 * img_height / 3 else "CENTER"
     
@@ -31,57 +54,106 @@ class DragDropWidget(QLabel):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAlignment(Qt.AlignCenter)
-        self.setText("Drop image/video here")
+        self.setText("Drag & Drop image/video here\n― or click to browse ―")
         self.setStyleSheet("""
             QLabel {
                 border: 2px dashed #aaa;
-                border-radius: 5px;
+                border-radius: 8px;
                 background-color: #f9f9f9;
-                font-size: 16px;
-                color: #666;
+                font-size: 15px;
+                color: #555;
+                padding: 20px;
+            }
+            QLabel:hover {
+                background-color: #f0f0f0;
+                border-color: #2196F3;
             }
         """)
         self.setAcceptDrops(True)
-        self.setMinimumSize(400, 200)
+        self.setMinimumSize(400, 180)
         self.file_path = None
 
     def dragEnterEvent(self, event):
-        if event.mimeData().hasUrls():
-            event.accept()
+        if event.mimeData().hasUrls() or event.mimeData().hasText():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event):
+        if event.mimeData().hasUrls() or event.mimeData().hasText():
+            event.acceptProposedAction()
         else:
             event.ignore()
 
     def dropEvent(self, event):
-        files = [u.toLocalFile() for u in event.mimeData().urls()]
-        if files:
-            self.file_path = files[0]
-            self.setText(f"File loaded:\n{os.path.basename(self.file_path)}")
-            self.setStyleSheet("""
-                QLabel {
-                    border: 2px solid #4CAF50;
-                    border-radius: 5px;
-                    background-color: #e8f5e9;
-                    font-size: 16px;
-                    color: #2E7D32;
-                }
-            """)
+        file_path = None
+        # Handle standard file URLs
+        if event.mimeData().hasUrls():
+            urls = event.mimeData().urls()
+            if urls:
+                file_path = urls[0].toLocalFile()
+        # Handle plain text paths sometimes sent by Windows Explorer
+        elif event.mimeData().hasText():
+            file_path = event.mimeData().text().strip().replace("file:///", "")
+
+        if file_path and os.path.exists(file_path):
+            self.set_loaded_file(file_path)
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            file_path, _ = QFileDialog.getOpenFileName(
+                self,
+                "Select Image or Video",
+                "",
+                "Media Files (*.jpg *.jpeg *.png *.bmp *.webp *.mp4 *.avi *.mov *.mkv);;All Files (*.*)"
+            )
+            if file_path:
+                self.set_loaded_file(file_path)
+
+    def set_loaded_file(self, path):
+        self.file_path = path
+        self.setText(f"✓ File Loaded:\n{os.path.basename(path)}")
+        self.setStyleSheet("""
+            QLabel {
+                border: 2px solid #4CAF50;
+                border-radius: 8px;
+                background-color: #e8f5e9;
+                font-size: 15px;
+                font-weight: bold;
+                color: #2E7D32;
+                padding: 20px;
+            }
+        """)
 
 class WatermarkDetectorApp(QWidget):
     def __init__(self):
         super().__init__()
         
-        # Load models
-        self.yolo_model = YOLO('yolov8n.pt')
+        # Ensures the main window doesn't block drop events for the child widget
+        self.setAcceptDrops(True)
+        
+        # Load watermark model (checks for local best.pt -> Hugging Face -> yolov8n.pt fallback)
+        if os.path.exists("best.pt"):
+            self.yolo_model = YOLO("best.pt")
+        else:
+            try:
+                self.yolo_model = YOLO("hf://qfisch/yolov8n-watermark-detection")
+            except Exception:
+                self.yolo_model = YOLO("yolov8n.pt")
+        
         try:
             self.vgg_model = load_model(r"watermark_detection_model_V2_60000_Data_Set.h5")
-        except:
+        except Exception:
             self.vgg_model = None
             
         self.initUI()
 
     def initUI(self):
         self.setWindowTitle('WATERMARK DETECTOR')
-        self.setGeometry(100, 100, 500, 500)
+        self.setGeometry(100, 100, 500, 520)
         
         layout = QVBoxLayout()
         
@@ -159,7 +231,7 @@ class WatermarkDetectorApp(QWidget):
         
     def scan_file(self):
         if not self.drop_zone.file_path:
-            self.result_label.setText("NO FILE DROPPED")
+            self.result_label.setText("NO FILE LOADED")
             return
             
         self.result_label.setText("SCANNING...")
@@ -184,7 +256,7 @@ class WatermarkDetectorApp(QWidget):
             cap = cv2.VideoCapture(file_path)
             total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
             if total_frames == 0:
-                total_frames = 1 # fallback
+                total_frames = 1
                 
             frame_count = 0
             while cap.isOpened():
@@ -192,7 +264,6 @@ class WatermarkDetectorApp(QWidget):
                 if not ret:
                     break
                     
-                # Process every 30th frame to save time like other scripts
                 if frame_count % 30 == 0:
                     conf, loc, detected = self.process_frame(frame, model_choice)
                     if detected:
@@ -202,10 +273,10 @@ class WatermarkDetectorApp(QWidget):
                             best_loc = loc
                 frame_count += 1
             cap.release()
-            total_frames = frame_count # update to actual frames processed
+            total_frames = frame_count
             
-        # Update UI
-        if max_conf > 0.3 or watermarked_frames > 0:
+        # Update UI results
+        if max_conf > 0.25 or watermarked_frames > 0:
             self.result_label.setText("WATERMARK DETECTED")
             self.result_label.setStyleSheet("color: red;")
         else:
@@ -248,7 +319,6 @@ class WatermarkDetectorApp(QWidget):
                         yolo_detected = True
                         
         if model_choice in ["VGG16", "Both"] and self.vgg_model is not None:
-            # Preprocess for VGG
             resized = cv2.resize(frame, (224, 224))
             rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
             img_array = image.img_to_array(rgb)
@@ -264,10 +334,8 @@ class WatermarkDetectorApp(QWidget):
         elif model_choice == "VGG16":
             return vgg_conf, "N/A", vgg_detected
         else:
-            # Both
             avg_conf = (yolo_conf + vgg_conf) / 2
             detected = yolo_detected or vgg_detected
-            # Use YOLO location if available since VGG has none
             return avg_conf, yolo_loc, detected
 
 if __name__ == '__main__':
