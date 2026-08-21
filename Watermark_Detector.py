@@ -28,6 +28,6 @@ if __name__ == '__main__':
         project='watermark_detection',
         name='yolov8_watermark_model'
     )
-
+    
     # Save the model is handled automatically by Ultralytics YOLO,
     # it will be saved in watermark_detection/yolov8_watermark_model/weights/best.pt

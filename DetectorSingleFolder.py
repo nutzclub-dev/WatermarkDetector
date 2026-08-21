@@ -3,36 +3,36 @@ import shutil
 from ultralytics import YOLO
 
 # Load the trained model
-model = YOLO('yolov8n.pt')
+model = YOLO('yolov8n.pt') 
 
 def predict_watermark(img_path):
     results = model(img_path, verbose=False)
-
+    
     detections = []
-
+    
     for r in results:
         boxes = r.boxes
         for box in boxes:
-            b = box.xyxy[0].tolist()
-            c = box.conf[0].item()
-            cls_id = int(box.cls[0].item())
-            cls_name = model.names[cls_id]
-
+            b = box.xyxy[0].tolist()  
+            c = box.conf[0].item()    
+            cls_id = int(box.cls[0].item()) 
+            cls_name = model.names[cls_id] 
+            
             detections.append({
                 'box': b,
                 'confidence': c,
                 'class_name': cls_name
             })
-
+            
     return img_path, detections
 
 def organize_images(image_paths, watermarked_dir, not_watermarked_dir, threshold=0.3):
     for img_path in image_paths:
         _, detections = predict_watermark(img_path)
-
+        
         # Check if any detection has confidence above threshold
         is_watermarked = any(det['confidence'] > threshold for det in detections)
-
+        
         if is_watermarked:
             # Move to watermarked folder
             shutil.move(img_path, os.path.join(watermarked_dir, os.path.basename(img_path)))

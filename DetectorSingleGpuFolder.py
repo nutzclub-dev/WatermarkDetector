@@ -5,7 +5,7 @@ from ultralytics import YOLO
 WATER_DIR = r"C:\Users\yegor\Downloads\water\WatermarkDataset\images\val"
 
 # Load the trained model
-model = YOLO('yolov8n.pt')
+model = YOLO('yolov8n.pt') 
 
 def predict_watermark(image_paths, batch_size=64):
     predictions = {}
@@ -17,11 +17,11 @@ def predict_watermark(image_paths, batch_size=64):
             detections = []
             boxes = r.boxes
             for box in boxes:
-                b = box.xyxy[0].tolist()
-                c = box.conf[0].item()
-                cls_id = int(box.cls[0].item())
-                cls_name = model.names[cls_id]
-
+                b = box.xyxy[0].tolist()  
+                c = box.conf[0].item()    
+                cls_id = int(box.cls[0].item()) 
+                cls_name = model.names[cls_id] 
+                
                 detections.append({
                     'box': b,
                     'confidence': c,
